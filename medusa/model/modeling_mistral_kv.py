@@ -675,6 +675,10 @@ class MistralPreTrainedModel(PreTrainedModel):
     def _init_weights(self, module):
         std = self.config.initializer_range
         if isinstance(module, nn.Linear):
+            # [MODIFIED] Skip initialization for quantized weights to prevent normal_kernel_cuda error
+            if hasattr(module, "weight") and module.weight is not None:
+                if not module.weight.is_floating_point():
+                    return
             module.weight.data.normal_(mean=0.0, std=std)
             if module.bias is not None:
                 module.bias.data.zero_()
