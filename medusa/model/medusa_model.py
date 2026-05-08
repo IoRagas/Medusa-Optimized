@@ -123,16 +123,22 @@ class MedusaModelABC(nn.Module):
         self.medusa_num_layers = medusa_num_layers
         self.base_model_name_or_path = base_model_name_or_path
         self.tokenizer = AutoTokenizer.from_pretrained(self.base_model_name_or_path)
-        # Create a list of Medusa heads
-        self.medusa_head = nn.ModuleList(
-            [
-                nn.Sequential(
-                    *([ResBlock(self.hidden_size)] * medusa_num_layers),
-                    nn.Linear(self.hidden_size, self.vocab_size, bias=False),
-                )
-                for _ in range(medusa_num_heads)
-            ]
-        )
+        # The Medusa heads are dynamically added after base model loading to prevent
+        # quantization bugs with `BitsAndBytes` and initialization crashes in `accelerate`.
+        self.medusa_head = None
+    def _add_medusa_heads(self, config):
+        """Dynamically add the Medusa heads after from_pretrained."""
+        if getattr(self, "medusa_head", None) is None:
+            self.medusa_head = nn.ModuleList(
+                [
+                    nn.Sequential(
+                        *([ResBlock(self.hidden_size)] * getattr(config, "medusa_num_layers", self.medusa_num_layers)),
+                        nn.Linear(self.hidden_size, self.vocab_size, bias=False),
+                    )
+                    for _ in range(getattr(config, "medusa_num_heads", self.medusa))
+                ]
+            )
+
     # Add a link named base_model to self
     @property
     def base_model(self):
@@ -158,6 +164,7 @@ class MedusaModelABC(nn.Module):
                 **kwargs,
                 config=config,
             )
+            model._add_medusa_heads(config)
             medusa_head_path = os.path.join(pretrained_model_name_or_path, "medusa_lm_head.pt")
             if os.path.exists(medusa_head_path):
                 filename = medusa_head_path
@@ -175,6 +182,7 @@ class MedusaModelABC(nn.Module):
                 **kwargs,
                 config=base_model_config,
             )
+            model._add_medusa_heads(base_model_config)
             medusa_head_path = os.path.join(pretrained_model_name_or_path, "medusa_lm_head.pt")
             if os.path.exists(medusa_head_path):
                 filename = medusa_head_path
