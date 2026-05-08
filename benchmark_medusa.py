@@ -37,7 +37,6 @@ def run_benchmark(args):
     print("This will download ~14GB of weights if not already cached.\n")
 
     # ── Build loading kwargs ──────────────────────────────────────────
-    import os
     load_kwargs = dict(
         torch_dtype=torch.float16,
         low_cpu_mem_usage=True,
