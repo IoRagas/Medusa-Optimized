@@ -59,8 +59,10 @@ def run_benchmark(args):
             )
             load_kwargs["device_map"] = "auto"
     else:
-        # Pure fp16 — no quantization needed
-        load_kwargs["device_map"] = "auto"
+        # Pure fp16 — force everything onto GPU 0.
+        # device_map="auto" can corrupt old .bin-format weights during disk
+        # offloading; the 7B model (~13.5 GB) fits in T4's 15 GB VRAM directly.
+        load_kwargs["device_map"] = {"": 0}
 
     # ── Load model ────────────────────────────────────────────────────
     try:
