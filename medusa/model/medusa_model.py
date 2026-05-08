@@ -40,6 +40,18 @@ class MedusaConfig(PretrainedConfig):
         self.medusa_num_layers = medusa_num_layers
         self.base_model_name_or_path = base_model_name_or_path
 
+
+def _ensure_medusa_fields(config, pretrained_model_name_or_path):
+    if not hasattr(config, "medusa_num_heads"):
+        config.medusa_num_heads = 5
+    if not hasattr(config, "medusa_num_layers"):
+        config.medusa_num_layers = 1
+    if not getattr(config, "base_model_name_or_path", None):
+        config.base_model_name_or_path = getattr(
+            config, "_name_or_path", None
+        ) or pretrained_model_name_or_path
+    return config
+
 class ResBlock(nn.Module):
     """
     A Residual Block module.
@@ -69,6 +81,10 @@ class ResBlock(nn.Module):
         Returns:
             torch.Tensor: Output after the residual connection and activation.
         """
+        # Cast to the weight's dtype: the 4-bit quantized base model emits
+        # bfloat16 hidden states, but medusa_head is kept in float16 (skipped
+        # from quantization), so we align dtypes here.
+        x = x.to(self.linear.weight.dtype)
         return x + self.act(self.linear(x))
 
 
@@ -128,20 +144,31 @@ class MedusaModelABC(nn.Module):
         *args,
         **kwargs,
     ):
-        # Manually load config to ensure that the medusa_num_heads parameter is loaded
         try:
+            if not kwargs.get("load_in_8bit", True):
+                kwargs.pop("load_in_8bit", None)
+            if not kwargs.get("load_in_4bit", True):
+                kwargs.pop("load_in_4bit", None)
+            
             config = AutoConfig.from_pretrained(pretrained_model_name_or_path)
-            return super().from_pretrained(
+            config = _ensure_medusa_fields(config, pretrained_model_name_or_path)
+            model = super().from_pretrained(
                 pretrained_model_name_or_path,
                 *args,
                 **kwargs,
                 config=config,
             )
-        except:
+            medusa_head_path = os.path.join(pretrained_model_name_or_path, "medusa_lm_head.pt")
+            if os.path.exists(medusa_head_path):
+                filename = medusa_head_path
+            else:
+                return model
+        except Exception:
             config = MedusaConfig.from_pretrained(pretrained_model_name_or_path)
             base_model_config = AutoConfig.from_pretrained(config.base_model_name_or_path)
-            base_model_config.medusa_num_heads = 5 # TODO: fix the uploaded config (only include 2 heads)
+            base_model_config.medusa_num_heads = config.medusa_num_heads
             base_model_config.medusa_num_layers = config.medusa_num_layers
+            base_model_config.base_model_name_or_path = config.base_model_name_or_path
             model = super().from_pretrained(
                 config.base_model_name_or_path,
                 *args,
@@ -152,10 +179,50 @@ class MedusaModelABC(nn.Module):
             if os.path.exists(medusa_head_path):
                 filename = medusa_head_path
             else:
-                filename = hf_hub_download(pretrained_model_name_or_path, "medusa_lm_head.pt")
-            medusa_head_state_dict = torch.load(filename, map_location=model.device)
+                # Try cache first (works offline), then fall back to network download.
+                try:
+                    filename = hf_hub_download(
+                        pretrained_model_name_or_path,
+                        "medusa_lm_head.pt",
+                        local_files_only=True,
+                    )
+                except Exception:
+                    try:
+                        filename = hf_hub_download(
+                            pretrained_model_name_or_path, "medusa_lm_head.pt"
+                        )
+                    except Exception as e:
+                        warnings.warn(
+                            f"Could not load medusa_lm_head.pt ({e}). "
+                            "Medusa heads will be randomly initialized — outputs will be garbage. "
+                            "Ensure the file is cached or internet is available."
+                        )
+                        return model
+        # Load to CPU first — safer with quantized models where model.device
+        # may not resolve cleanly across all shards.
+        medusa_head_state_dict = torch.load(filename, map_location="cpu", weights_only=True)
+        try:
+            model.medusa_head.load_state_dict(medusa_head_state_dict, strict=False, assign=True)
+        except TypeError:
             model.medusa_head.load_state_dict(medusa_head_state_dict, strict=False)
-            return model
+            
+        # Remove accelerate hooks from medusa_head so it doesn't try to load from an offload index
+        def remove_hooks(module):
+            if hasattr(module, "_hf_hook"):
+                delattr(module, "_hf_hook")
+            if hasattr(module, "_old_forward"):
+                module.forward = module._old_forward
+                delattr(module, "_old_forward")
+        model.medusa_head.apply(remove_hooks)
+            
+        # Move medusa_head to GPU in float16.
+        # IMPORTANT: use explicit dtype=torch.float16, not just .to(device).
+        # The base model emits bfloat16 activations; if we let .to(device)
+        # inherit the model's dtype it would cast to bfloat16 and break the
+        # fp16 checkpoint weights that were just loaded.
+        model.medusa_head.to(device="cuda:0", dtype=torch.float16)
+        
+        return model
         
 
     def get_tokenizer(self):
@@ -209,7 +276,11 @@ class MedusaModelABC(nn.Module):
                 **kwargs,
             )
             if output_orig:
-                orig = self.base_model.lm_head(outputs[0])
+                # lm_head is fp16 (skipped from quantization); base model may
+                # output bfloat16 — cast here to avoid dtype mismatch.
+                orig = self.base_model.lm_head(
+                    outputs[0].to(self.base_model.lm_head.weight.dtype)
+                )
         # Clone the output hidden states
         hidden_states = outputs[0].clone()
         medusa_logits = []
@@ -222,15 +293,31 @@ class MedusaModelABC(nn.Module):
     def get_medusa_choice(self, model_name):
         if 'vicuna' in model_name:
             if '7b' in model_name:
-                return vicuna_7b_stage2
+                choices = vicuna_7b_stage2
             elif '13b' in model_name:
-                return vicuna_13b_stage2
+                choices = vicuna_13b_stage2
             elif '33b' in model_name:
-                return vicuna_33b_stage2
+                choices = vicuna_33b_stage2
+            else:
+                choices = mc_sim_7b_63
         elif 'zephyr' in model_name:
-            return zephyr_stage2
-        warnings.warn('Please specify medusa choice configuration!')
-        return mc_sim_7b_63
+            choices = zephyr_stage2
+        else:
+            warnings.warn('Please specify medusa choice configuration!')
+            choices = mc_sim_7b_63
+
+        # Filter: keep only paths whose depth <= medusa_num_heads.
+        # vicuna_7b_stage2 assumes 5 heads; this model has self.medusa heads.
+        # A path of length k uses head indices 0..k-1. If k > self.medusa,
+        # the tree_indices for that path would exceed len(candidates), causing
+        # a CUDA index-out-of-bounds crash.
+        filtered = [c for c in choices if len(c) <= self.medusa]
+        if len(filtered) < len(choices):
+            warnings.warn(
+                f"Medusa choice tree was filtered from {len(choices)} to "
+                f"{len(filtered)} paths to match medusa_num_heads={self.medusa}."
+            )
+        return filtered
 
     def medusa_generate(
         self,
@@ -369,10 +456,32 @@ class MedusaModelABC(nn.Module):
                 break
 
 
+from transformers.models.llama.modeling_llama import LlamaForCausalLM as StdLlamaForCausalLM
 class MedusaModelLlama(MedusaModelABC, KVLlamaForCausalLM):
+    """Medusa model for Llama architecture.
+    
+    Inherits from KVLlamaForCausalLM (custom KV-cache model) which is
+    required for the medusa_generate() tree-attention path.
+    
+    For standard (non-Medusa) autoregressive generation, use a manual
+    forward loop WITHOUT use_cache=True, since the KV model's attention
+    layers expect KVCache objects (not DynamicCache).
+    """
     pass
 
+
 class MedusaModelMistral(MedusaModelABC, KVMistralForCausalLM):
+    pass
+
+# In transformers v4.50+, GenerationMixin is no longer auto-included in
+# PreTrainedModel.  Patch it in explicitly so .generate() is available.
+try:
+    from transformers import GenerationMixin as _GenMixin
+    if not hasattr(MedusaModelLlama, "generate"):
+        MedusaModelLlama.generate = _GenMixin.generate
+    if not hasattr(MedusaModelMistral, "generate"):
+        MedusaModelMistral.generate = _GenMixin.generate
+except Exception:
     pass
 
 

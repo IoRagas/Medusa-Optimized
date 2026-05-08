@@ -19,13 +19,22 @@ from transformers.activations import ACT2FN
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast, SequenceClassifierOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
-from transformers.utils import (
-    add_start_docstrings,
-    add_start_docstrings_to_model_forward,
-    is_flash_attn_available,
-    logging,
-    replace_return_docstrings,
-)
+try:
+    from transformers.utils import (
+        add_start_docstrings,
+        add_start_docstrings_to_model_forward,
+        is_flash_attn_available,
+        logging,
+        replace_return_docstrings,
+    )
+except ImportError:
+    from transformers.utils import (
+        add_start_docstrings,
+        add_start_docstrings_to_model_forward,
+        is_flash_attn_2_available as is_flash_attn_available,
+        logging,
+        replace_return_docstrings,
+    )
 from transformers.models.llama.configuration_llama import LlamaConfig
 
 
@@ -43,7 +52,7 @@ def _get_unpad_data(padding_mask):
     seqlens_in_batch = padding_mask.sum(dim=-1, dtype=torch.int32)
     indices = torch.nonzero(padding_mask.flatten(), as_tuple=False).flatten()
     max_seqlen_in_batch = seqlens_in_batch.max().item()
-    cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.torch.int32), (1, 0))
+    cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32), (1, 0))
     return (
         indices,
         cu_seqlens,
@@ -261,7 +270,7 @@ class LlamaAttention(nn.Module):
         self.num_key_value_heads = config.num_key_value_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
         self.max_position_embeddings = config.max_position_embeddings
-        self.rope_theta = config.rope_theta
+        self.rope_theta = getattr(config, "rope_theta", 10000.0)
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
             raise ValueError(
@@ -282,8 +291,8 @@ class LlamaAttention(nn.Module):
                 base=self.rope_theta,
             )
         else:
-            scaling_type = self.config.rope_scaling["type"]
-            scaling_factor = self.config.rope_scaling["factor"]
+            scaling_type = self.config.rope_scaling.get("type", self.config.rope_scaling.get("rope_type"))
+            scaling_factor = self.config.rope_scaling.get("factor", 1.0)
             if scaling_type == "linear":
                 self.rotary_emb = LlamaLinearScalingRotaryEmbedding(
                     self.head_dim,
@@ -296,6 +305,12 @@ class LlamaAttention(nn.Module):
                     self.head_dim,
                     max_position_embeddings=self.max_position_embeddings,
                     scaling_factor=scaling_factor,
+                    base=self.rope_theta,
+                )
+            elif scaling_type == "default":
+                self.rotary_emb = LlamaRotaryEmbedding(
+                    self.head_dim,
+                    max_position_embeddings=self.max_position_embeddings,
                     base=self.rope_theta,
                 )
             else:

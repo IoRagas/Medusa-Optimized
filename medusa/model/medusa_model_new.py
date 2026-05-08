@@ -42,6 +42,18 @@ class ResBlock(nn.Module):
         """
         return x + self.act(self.linear(x))
 
+
+def _ensure_medusa_fields(config, pretrained_model_name_or_path):
+    if not hasattr(config, "medusa_num_heads"):
+        config.medusa_num_heads = 5
+    if not hasattr(config, "medusa_num_layers"):
+        config.medusa_num_layers = 1
+    if not getattr(config, "base_model_name_or_path", None):
+        config.base_model_name_or_path = getattr(
+            config, "_name_or_path", None
+        ) or pretrained_model_name_or_path
+    return config
+
 class MedusaModel(PreTrainedModel):
     """The Medusa Language Model Head.
 
@@ -100,8 +112,8 @@ class MedusaModel(PreTrainedModel):
         *args,
         **kwargs,
     ):
-        # Manually load config to ensure that the medusa_num_heads parameter is loaded
         config = AutoConfig.from_pretrained(pretrained_model_name_or_path)
+        config = _ensure_medusa_fields(config, pretrained_model_name_or_path)
         return super().from_pretrained(
             pretrained_model_name_or_path,
             *args,

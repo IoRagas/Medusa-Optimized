@@ -295,6 +295,12 @@ def generate_candidates(medusa_logits, logits, tree_indices, retrieve_indices, t
     # Map the combined candidates to the tree indices to get tree candidates.
     tree_candidates = candidates[tree_indices]
 
+    # Safety clamp: if medusa heads produce out-of-range token IDs (e.g. bad
+    # weights or a vocab-size mismatch between the head and the embedding table)
+    # clamp here so the embedding lookup never triggers a CUDA assertion.
+    vocab_size = medusa_logits.shape[-1]
+    tree_candidates = tree_candidates.clamp(0, vocab_size - 1)
+
     # Extend the tree candidates by appending a zero.
     tree_candidates_ext = torch.cat([tree_candidates, torch.zeros((1), dtype=torch.long, device=tree_candidates.device)], dim=0)
 
@@ -501,7 +507,7 @@ def evaluate_posterior(
                 best_candidate = best_candidates[torch.argmax(likelihood)]
             return best_candidate, accept_length
         # Calculate posterior probabilities and thresholds for candidate selection
-        posterior_mask = get_typical_posterior_mask(logits, candidates, temperature, posterior_threshold, posterior_alpha, fast)
+        posterior_mask = get_typical_posterior_mask(logits, candidates, temperature, posterior_threshold, posterior_alpha)
         candidates_accept_length = (torch.cumprod(posterior_mask, dim=1)).sum(dim=1)
         # Choose the best candidate based on the evaluated posterior probabilities
         accept_length = candidates_accept_length.max()
