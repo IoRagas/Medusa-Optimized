@@ -51,17 +51,14 @@ def run_benchmark(args):
                 bnb_4bit_use_double_quant=True,
                 llm_int8_skip_modules=skip_modules,
             )
-            load_kwargs["device_map"] = {"": 0}
         else:  # 8-bit
             load_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_8bit=True,
                 llm_int8_skip_modules=skip_modules,
             )
-            load_kwargs["device_map"] = "auto"
+        load_kwargs["device_map"] = {"": 0}
     else:
         # Pure fp16 — force everything onto GPU 0.
-        # device_map="auto" can corrupt old .bin-format weights during disk
-        # offloading; the 7B model (~13.5 GB) fits in T4's 15 GB VRAM directly.
         load_kwargs["device_map"] = {"": 0}
 
     # ── Load model ────────────────────────────────────────────────────

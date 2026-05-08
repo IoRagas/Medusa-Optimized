@@ -280,7 +280,11 @@ class MistralAttention(nn.Module):
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+        # [MODIFIED] Upcast to float32 to prevent overflow on T4 GPUs
+        attn_weights = torch.matmul(
+            query_states.to(torch.float32), 
+            key_states.transpose(2, 3).to(torch.float32)
+        ) / math.sqrt(self.head_dim)
 
         if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
             raise ValueError(
@@ -675,9 +679,12 @@ class MistralPreTrainedModel(PreTrainedModel):
     def _init_weights(self, module):
         std = self.config.initializer_range
         if isinstance(module, nn.Linear):
-            # [MODIFIED] Skip initialization for quantized weights to prevent normal_kernel_cuda error
+            # [MODIFIED] Skip initialization for quantized weights or if already initialized
             if hasattr(module, "weight") and module.weight is not None:
                 if not module.weight.is_floating_point():
+                    return
+                # Also skip if we are in inference mode and the weight is not meta (already loaded)
+                if module.weight.device != torch.device("meta") and not self.training:
                     return
             module.weight.data.normal_(mean=0.0, std=std)
             if module.bias is not None:
