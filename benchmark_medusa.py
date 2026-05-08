@@ -12,6 +12,7 @@ import argparse
 import torch
 import time
 import os
+from transformers import AutoTokenizer
 from medusa.model.medusa_model import MedusaModel
 
 
