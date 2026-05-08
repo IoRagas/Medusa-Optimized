@@ -12,7 +12,7 @@ import argparse
 import torch
 import time
 import os
-from transformers import AutoTokenizer
+from fastchat.model.model_adapter import get_conversation_template
 from medusa.model.medusa_model import MedusaModel
 
 
@@ -73,7 +73,7 @@ def run_benchmark(args):
         print(f"\nFailed to load model. Error: {e}")
         return
 
-    tokenizer = AutoTokenizer.from_pretrained("lmsys/vicuna-7b-v1.3", use_fast=False)
+    tokenizer = model.get_tokenizer()
     repetition_penalty = 1.2
     device = next(model.parameters()).device
 
@@ -81,7 +81,10 @@ def run_benchmark(args):
         used = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.mem_get_info()[0]) / 1024**3
         print(f"VRAM used after load: {used:.2f} GB")
 
-    prompt = "USER: Explain the theory of parallel computing and why it is important for modern systems.\nASSISTANT:"
+    conv = get_conversation_template(model_name)
+    conv.append_message(conv.roles[0], "Explain the theory of parallel computing and why it is important for modern systems.")
+    conv.append_message(conv.roles[1], None)
+    prompt = conv.get_prompt()
     input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
 
     max_new = args.max_new_tokens
