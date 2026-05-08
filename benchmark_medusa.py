@@ -72,7 +72,8 @@ def run_benchmark(args):
         print(f"\nFailed to load model. Error: {e}")
         return
 
-    tokenizer = model.get_tokenizer()
+    tokenizer = AutoTokenizer.from_pretrained("lmsys/vicuna-7b-v1.3", use_fast=False)
+    repetition_penalty = 1.2
     device = next(model.parameters()).device
 
     if torch.cuda.is_available():
@@ -106,6 +107,14 @@ def run_benchmark(args):
                 return_dict=True,
             )
             logits = outputs.logits[:, -1, :].float()
+            
+            # Apply repetition penalty
+            for token_id in set(generated_ids + input_ids[0].tolist()):
+                if logits[0, token_id] > 0:
+                    logits[0, token_id] /= repetition_penalty
+                else:
+                    logits[0, token_id] *= repetition_penalty
+
             next_id = logits.argmax(dim=-1)
             tok = next_id.item()
             if tok == tokenizer.eos_token_id:
@@ -145,6 +154,7 @@ def run_benchmark(args):
             temperature=0.0,
             max_steps=max_new,
         ):
+            # medusa_generate yields {"text": "full string so far"}
             medusa_text = chunk["text"]
     medusa_time = time.time() - start_time
 
