@@ -190,7 +190,10 @@ class MistralMLP(nn.Module):
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
-        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        # [MODIFIED] Upcast to float32 for multiplication
+        gate_out = self.gate_proj(x)
+        up_out = self.up_proj(x)
+        return self.down_proj((self.act_fn(gate_out).to(torch.float32) * up_out.to(torch.float32)).to(x.dtype))
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:

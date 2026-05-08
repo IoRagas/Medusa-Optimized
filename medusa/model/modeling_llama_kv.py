@@ -90,7 +90,8 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
 
     inverted_mask = 1.0 - expanded_mask
 
-    return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
+    # [MODIFIED] Use a fixed large negative value instead of finfo.min to prevent fp16 issues
+    return inverted_mask.masked_fill(inverted_mask.to(torch.bool), -10000.0)
 
 
 class LlamaRMSNorm(nn.Module):
@@ -235,13 +236,17 @@ class LlamaMLP(nn.Module):
             )
             up_proj = torch.cat([F.linear(x, up_proj_slices[i]) for i in range(self.config.pretraining_tp)], dim=-1)
 
-            intermediate_states = (self.act_fn(gate_proj) * up_proj).split(slice, dim=2)
+            # [MODIFIED] Upcast to float32 for multiplication
+            intermediate_states = (self.act_fn(gate_proj).to(torch.float32) * up_proj.to(torch.float32)).to(x.dtype).split(slice, dim=2)
             down_proj = [
                 F.linear(intermediate_states[i], down_proj_slices[i]) for i in range(self.config.pretraining_tp)
             ]
             down_proj = sum(down_proj)
         else:
-            down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+            # [MODIFIED] Upcast to float32 for multiplication
+            gate_out = self.gate_proj(x)
+            up_out = self.up_proj(x)
+            down_proj = self.down_proj((self.act_fn(gate_out).to(torch.float32) * up_out.to(torch.float32)).to(x.dtype))
 
         return down_proj
 
