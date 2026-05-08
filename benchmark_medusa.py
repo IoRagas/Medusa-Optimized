@@ -12,12 +12,14 @@ import argparse
 import torch
 import time
 import os
+from transformers import AutoTokenizer
 from fastchat.model.model_adapter import get_conversation_template
 from medusa.model.medusa_model import MedusaModel
 
 
 def run_benchmark(args):
     model_name = "FasterDecoding/medusa-vicuna-7b-v1.3"
+    base_model_name = args.base_model or "lmsys/vicuna-7b-v1.3"
     
     # Ensure offload folder exists for 8-bit loading stability
     os.makedirs("offload", exist_ok=True)
@@ -73,7 +75,7 @@ def run_benchmark(args):
         print(f"\nFailed to load model. Error: {e}")
         return
 
-    tokenizer = model.get_tokenizer()
+    tokenizer = AutoTokenizer.from_pretrained(base_model_name, use_fast=False)
     repetition_penalty = 1.2
     device = next(model.parameters()).device
 
@@ -81,7 +83,7 @@ def run_benchmark(args):
         used = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.mem_get_info()[0]) / 1024**3
         print(f"VRAM used after load: {used:.2f} GB")
 
-    conv = get_conversation_template(model_name)
+    conv = get_conversation_template("vicuna")
     conv.append_message(conv.roles[0], "Explain the theory of parallel computing and why it is important for modern systems.")
     conv.append_message(conv.roles[1], None)
     prompt = conv.get_prompt()
@@ -189,5 +191,6 @@ if __name__ == "__main__":
     parser.add_argument("--load-in-8bit", action="store_true", help="Use 8-bit quantization (needs bitsandbytes)")
     parser.add_argument("--load-in-4bit", action="store_true", help="Use 4-bit quantization (needs bitsandbytes)")
     parser.add_argument("--max-new-tokens", type=int, default=150, help="Maximum number of new tokens to generate")
+    parser.add_argument("--base-model", type=str, default=None, help="Override base model (e.g. lmsys/vicuna-7b-v1.3)")
     args = parser.parse_args()
     run_benchmark(args)
