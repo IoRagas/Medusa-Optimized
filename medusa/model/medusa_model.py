@@ -14,6 +14,7 @@ from .kv_cache import initialize_past_key_values
 from .medusa_choices import *
 from transformers import AutoTokenizer, AutoConfig
 import os
+import json
 from huggingface_hub import hf_hub_download
 import warnings
 
@@ -51,6 +52,29 @@ def _ensure_medusa_fields(config, pretrained_model_name_or_path):
             config, "_name_or_path", None
         ) or pretrained_model_name_or_path
     return config
+
+
+def _load_medusa_config_fallback(pretrained_model_name_or_path):
+    """Load Medusa config even if config.json lacks model_type."""
+    try:
+        config = MedusaConfig.from_pretrained(pretrained_model_name_or_path)
+        return _ensure_medusa_fields(config, pretrained_model_name_or_path)
+    except Exception:
+        try:
+            config_path = hf_hub_download(
+                pretrained_model_name_or_path,
+                "config.json",
+                local_files_only=True,
+            )
+        except Exception:
+            config_path = hf_hub_download(
+                pretrained_model_name_or_path,
+                "config.json",
+            )
+        with open(config_path, "r", encoding="utf-8") as handle:
+            config_dict = json.load(handle)
+        config = MedusaConfig(**config_dict)
+        return _ensure_medusa_fields(config, pretrained_model_name_or_path)
 
 class ResBlock(nn.Module):
     """
@@ -157,6 +181,9 @@ class MedusaModelABC(nn.Module):
                 kwargs.pop("load_in_4bit", None)
             
             config = AutoConfig.from_pretrained(pretrained_model_name_or_path)
+            # [MODIFIED] If the config is incomplete (missing model_type), force fallback logic
+            if not hasattr(config, "model_type") or config.model_type not in ["llama", "mistral"]:
+                raise ValueError("Incomplete config")
             config = _ensure_medusa_fields(config, pretrained_model_name_or_path)
             model = super().from_pretrained(
                 pretrained_model_name_or_path,
@@ -171,7 +198,7 @@ class MedusaModelABC(nn.Module):
             else:
                 return model
         except Exception:
-            config = MedusaConfig.from_pretrained(pretrained_model_name_or_path)
+            config = _load_medusa_config_fallback(pretrained_model_name_or_path)
             base_model_config = AutoConfig.from_pretrained(config.base_model_name_or_path)
             base_model_config.medusa_num_heads = config.medusa_num_heads
             base_model_config.medusa_num_layers = config.medusa_num_layers
@@ -504,9 +531,9 @@ class MedusaModel():
         # Manually load config to ensure that the medusa_num_heads parameter is loaded
         try:
             config = AutoConfig.from_pretrained(pretrained_model_name_or_path)
-        except:
-            # MEDUSA-v0.1 load
-            config = MedusaConfig.from_pretrained(pretrained_model_name_or_path)
+        except Exception:
+            # MEDUSA-v0.1 or legacy config without model_type
+            config = _load_medusa_config_fallback(pretrained_model_name_or_path)
             base_model_config = AutoConfig.from_pretrained(config.base_model_name_or_path)
             config.model_type = base_model_config.model_type
 

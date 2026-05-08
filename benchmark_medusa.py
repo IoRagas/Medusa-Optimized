@@ -13,7 +13,7 @@ import torch
 import time
 import os
 from transformers import AutoTokenizer
-from medusa.model.medusa_model_new import MedusaModel
+from medusa.model.medusa_model import MedusaModel
 
 
 def run_benchmark(args):
