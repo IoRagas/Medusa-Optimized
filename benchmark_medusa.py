@@ -41,7 +41,6 @@ def run_benchmark(args):
 
     # ── Build loading kwargs ──────────────────────────────────────────
     load_kwargs = dict(
-        torch_dtype=torch.float16,
         low_cpu_mem_usage=True,
         offload_folder=os.path.abspath("offload"),
     )
@@ -57,14 +56,17 @@ def run_benchmark(args):
                 bnb_4bit_use_double_quant=True,
                 llm_int8_skip_modules=skip_modules,
             )
+            load_kwargs["device_map"] = {"": 0}
         else:  # 8-bit
             load_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_8bit=True,
+                llm_int8_enable_fp32_cpu_offload=True,
                 llm_int8_skip_modules=skip_modules,
             )
-        load_kwargs["device_map"] = {"": 0}
+            load_kwargs["device_map"] = "auto"
     else:
         # Pure fp16 — force everything onto GPU 0.
+        load_kwargs["torch_dtype"] = torch.float16
         load_kwargs["device_map"] = {"": 0}
 
     # ── Load model ────────────────────────────────────────────────────
