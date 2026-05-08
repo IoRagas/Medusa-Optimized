@@ -11,11 +11,15 @@ Usage (Google Colab / any GPU):
 import argparse
 import torch
 import time
+import os
 from medusa.model.medusa_model import MedusaModel
 
 
 def run_benchmark(args):
     model_name = "FasterDecoding/medusa-vicuna-7b-v1.3"
+    
+    # Ensure offload folder exists for 8-bit loading stability
+    os.makedirs("offload", exist_ok=True)
     
     # ── Determine precision mode ──────────────────────────────────────
     if args.load_in_4bit:
