@@ -217,9 +217,25 @@ class MedusaModelMistral(KVMistralForCausalLM, MedusaModelABC):
 class MedusaModel():
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
-        config = AutoConfig.from_pretrained(pretrained_model_name_or_path)
-        if config.model_type == "llama": return MedusaModelLlama.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
-        elif config.model_type == "mistral": return MedusaModelMistral.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        try:
+            config = AutoConfig.from_pretrained(pretrained_model_name_or_path)
+        except Exception:
+            config = _load_medusa_config_fallback(pretrained_model_name_or_path)
+            
+        if not hasattr(config, "model_type") or config.model_type is None:
+            # Try to get model_type from base model if Medusa config is minimal
+            try:
+                base_path = getattr(config, "base_model_name_or_path", pretrained_model_name_or_path)
+                base_config = AutoConfig.from_pretrained(base_path)
+                config.model_type = base_config.model_type
+            except Exception:
+                # Default to llama if everything fails (most common for Medusa)
+                config.model_type = "llama"
+
+        if config.model_type == "llama":
+            return MedusaModelLlama.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+        elif config.model_type == "mistral":
+            return MedusaModelMistral.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
         raise ValueError(f"Unsupported model type: {config.model_type}")
 
 try:
