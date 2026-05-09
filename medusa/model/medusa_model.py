@@ -222,21 +222,27 @@ class MedusaModel():
         except Exception:
             config = _load_medusa_config_fallback(pretrained_model_name_or_path)
             
-        if not hasattr(config, "model_type") or config.model_type is None:
-            # Try to get model_type from base model if Medusa config is minimal
+        # Get model_type, ensuring it's not None or empty
+        model_type = getattr(config, "model_type", None)
+        
+        if not model_type:
+            # Try to get model_type from base model if Medusa config is minimal or generic
             try:
                 base_path = getattr(config, "base_model_name_or_path", pretrained_model_name_or_path)
-                base_config = AutoConfig.from_pretrained(base_path)
-                config.model_type = base_config.model_type
+                if base_path == pretrained_model_name_or_path:
+                    # Avoid infinite recursion if they are the same
+                    model_type = "llama"
+                else:
+                    base_config = AutoConfig.from_pretrained(base_path)
+                    model_type = base_config.model_type
             except Exception:
-                # Default to llama if everything fails (most common for Medusa)
-                config.model_type = "llama"
+                model_type = "llama"
 
-        if config.model_type == "llama":
+        if model_type == "llama":
             return MedusaModelLlama.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
-        elif config.model_type == "mistral":
+        elif model_type == "mistral":
             return MedusaModelMistral.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
-        raise ValueError(f"Unsupported model type: {config.model_type}")
+        raise ValueError(f"Unsupported model type: '{model_type}'")
 
 try:
     from transformers import GenerationMixin
