@@ -105,11 +105,13 @@ class ResBlock(nn.Module):
         Returns:
             torch.Tensor: Output after the residual connection and activation.
         """
-        # Cast to the weight's dtype: the 4-bit quantized base model emits
-        # bfloat16 hidden states, but medusa_head is kept in float16 (skipped
-        # from quantization), so we align dtypes here.
-        x = x.to(self.linear.weight.dtype)
-        return x + self.act(self.linear(x))
+        # [MODIFIED] Upcast to float32 for residual addition to prevent overflow on T4 GPUs
+        input_dtype = x.dtype
+        x = x.to(torch.float32)
+        # Cast to the weight's dtype for the linear layer
+        res = self.linear(x.to(self.linear.weight.dtype))
+        res = self.act(res).to(torch.float32)
+        return (x + res).to(input_dtype)
 
 
 class MedusaModelABC(nn.Module):
@@ -185,6 +187,8 @@ class MedusaModelABC(nn.Module):
             if not hasattr(config, "model_type") or config.model_type not in ["llama", "mistral"]:
                 raise ValueError("Incomplete config")
             config = _ensure_medusa_fields(config, pretrained_model_name_or_path)
+            # [MODIFIED] Disable Flash Attention 2 for Medusa compatibility
+            config._flash_attn_2_enabled = False
             model = super().from_pretrained(
                 pretrained_model_name_or_path,
                 *args,
@@ -203,6 +207,8 @@ class MedusaModelABC(nn.Module):
             base_model_config.medusa_num_heads = config.medusa_num_heads
             base_model_config.medusa_num_layers = config.medusa_num_layers
             base_model_config.base_model_name_or_path = config.base_model_name_or_path
+            # [MODIFIED] Disable Flash Attention 2 for Medusa compatibility
+            base_model_config._flash_attn_2_enabled = False
             model = super().from_pretrained(
                 config.base_model_name_or_path,
                 *args,
@@ -255,7 +261,10 @@ class MedusaModelABC(nn.Module):
         # The base model emits bfloat16 activations; if we let .to(device)
         # inherit the model's dtype it would cast to bfloat16 and break the
         # fp16 checkpoint weights that were just loaded.
-        model.medusa_head.to(device="cuda:0", dtype=torch.float16)
+        # [MODIFIED] Force medusa_head and lm_head to float32 for numerical stability on T4
+        model.medusa_head.to(device="cuda:0", dtype=torch.float32)
+        if hasattr(model, "lm_head"):
+            model.lm_head.to(dtype=torch.float32)
         
         return model
         
@@ -311,16 +320,16 @@ class MedusaModelABC(nn.Module):
                 **kwargs,
             )
             if output_orig:
-                # lm_head is fp16 (skipped from quantization); base model may
-                # output bfloat16 — cast here to avoid dtype mismatch.
+                # [MODIFIED] lm_head is now float32; cast hidden states to float32
                 orig = self.base_model.lm_head(
-                    outputs[0].to(self.base_model.lm_head.weight.dtype)
+                    outputs[0].to(torch.float32)
                 )
-        # Clone the output hidden states
-        hidden_states = outputs[0].clone()
+        # Clone the output hidden states and upcast to float32 for Medusa heads
+        hidden_states = outputs[0].to(torch.float32)
         medusa_logits = []
         # TODO: Consider parallelizing this loop for efficiency?
         for i in range(self.medusa):
+            # [MODIFIED] Medusa heads are now float32
             medusa_logits.append(self.medusa_head[i](hidden_states))
         if output_orig:
             return torch.stack(medusa_logits, dim=0), outputs, orig

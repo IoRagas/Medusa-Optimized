@@ -190,10 +190,11 @@ class MistralMLP(nn.Module):
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
-        # [MODIFIED] Upcast to float32 for multiplication
+        # [MODIFIED] Upcast to float32 for multiplication to prevent overflow on T4 GPUs
         gate_out = self.gate_proj(x)
         up_out = self.up_proj(x)
-        return self.down_proj((self.act_fn(gate_out).to(torch.float32) * up_out.to(torch.float32)).to(x.dtype))
+        intermediate = self.act_fn(gate_out).to(torch.float32) * up_out.to(torch.float32)
+        return self.down_proj(intermediate.to(x.dtype))
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -283,7 +284,7 @@ class MistralAttention(nn.Module):
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        # [MODIFIED] Upcast to float32 to prevent overflow on T4 GPUs
+        # [MODIFIED] Upcast attention calculation to float32 for maximum stability on T4 GPUs
         attn_weights = torch.matmul(
             query_states.to(torch.float32), 
             key_states.transpose(2, 3).to(torch.float32)
@@ -300,12 +301,11 @@ class MistralAttention(nn.Module):
                 raise ValueError(
                     f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
                 )
+            attn_weights = attn_weights + attention_mask.to(torch.float32)
 
-            attn_weights = attn_weights + attention_mask
-
-        # upcast attention to fp32
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_output = torch.matmul(attn_weights, value_states)
+        # Keep attention weights in float32 for the softmax and the weighted sum
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32)
+        attn_output = torch.matmul(attn_weights, value_states.to(torch.float32)).to(query_states.dtype)
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
