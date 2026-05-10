@@ -33,7 +33,7 @@ class KVLlamaAttention(LlamaAttention):
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         # [MODIFIED] Check if we're using the Medusa persistent KV cache
-        is_medusa_cache = past_key_value is not None and hasattr(past_key_value[0], "kv_cache")
+        is_medusa_cache = past_key_value is not None and hasattr(past_key_value[0], "current_length")
         
         if not is_medusa_cache:
             return super().forward(

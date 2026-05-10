@@ -136,7 +136,7 @@ class MedusaModelABC(nn.Module):
             input_ids, logits, medusa_logits, new_token = update_inference_inputs(input_ids, candidates, best_candidate, accept_length, medusa_buffers["retrieve_indices"], outputs, logits, medusa_logits, new_token, past_key_values_data, current_length_data)
             # [MODIFIED] Fix the '_' issue by replacing SentencePiece space with regular space
             decoded_text = self.tokenizer.decode(input_ids[0, input_len:], skip_special_tokens=True)
-            yield {"text": decoded_text.replace(' ', ' ')}
+            yield {"text": decoded_text.replace('\u2581', ' ')}
             if self.tokenizer.eos_token_id in input_ids[0, input_len:]: break
 
 def _load_medusa_head_state_dict(pretrained_model_name_or_path):

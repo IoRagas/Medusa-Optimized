@@ -132,7 +132,7 @@ def run_benchmark(args):
     standard_tps = standard_tokens / standard_time if standard_time > 0 else 0
 
     decoded_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-    print(decoded_text.replace(' ', ' '))
+    print(decoded_text.replace('\u2581', ' '))
     print(f"\n[Metrics] Generated {standard_tokens} tokens in {standard_time:.2f}s")
     print(f"[Metrics] Standard Speed: {standard_tps:.2f} tokens/second")
 
