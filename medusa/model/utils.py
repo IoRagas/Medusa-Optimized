@@ -56,7 +56,7 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
         prev_depth = depth
     
     # Create the attention mask for Medusa
-    medusa_attn_mask = torch.eye(medusa_len, medusa_len)
+    medusa_attn_mask = torch.eye(medusa_len, medusa_len, device=device)
     medusa_attn_mask[:, 0] = 1
     start = 0
     for i in range(len(depth_counts)):
@@ -72,7 +72,7 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
         start += depth_counts[i]
 
     # Generate tree indices for the Medusa structure
-    medusa_tree_indices = torch.zeros(medusa_len, dtype=torch.long)
+    medusa_tree_indices = torch.zeros(medusa_len, dtype=torch.long, device=device)
     medusa_tree_indices[0] = 0
     start = 0
     for i in range(len(depth_counts)):
@@ -82,7 +82,7 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
         start += depth_counts[i]
 
     # Generate position IDs for the Medusa structure
-    medusa_position_ids = torch.zeros(medusa_len, dtype=torch.long)
+    medusa_position_ids = torch.zeros(medusa_len, dtype=torch.long, device=device)
     start = 0
     for i in range(len(depth_counts)):
         medusa_position_ids[start + 1: start + depth_counts[i] + 1] = i + 1
@@ -103,9 +103,9 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
         retrieve_indices_nest.append(retrieve_indice)
     max_length = max([len(x) for x in retrieve_indices_nest])
     retrieve_indices = [pad_path(path, max_length) for path in retrieve_indices_nest]
-    retrieve_indices = torch.tensor(retrieve_indices, dtype=torch.long)
+    retrieve_indices = torch.tensor(retrieve_indices, dtype=torch.long, device=device)
     retrieve_indices = retrieve_indices + 1
-    retrieve_indices = torch.cat([torch.zeros((retrieve_indices.shape[0], 1), dtype=torch.long), retrieve_indices], dim=1)
+    retrieve_indices = torch.cat([torch.zeros((retrieve_indices.shape[0], 1), dtype=torch.long, device=device), retrieve_indices], dim=1)
 
     # Aggregate the generated buffers into a dictionary
     medusa_attn_mask = medusa_attn_mask.unsqueeze(0).unsqueeze(0)
@@ -119,13 +119,6 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
         "retrieve_indices": retrieve_indices,
         }
     
-    # Move the tensors in the dictionary to the specified device
-    medusa_buffers = {
-        k: v.clone().to(device)
-        if isinstance(v, torch.Tensor)
-        else torch.tensor(v,  device=device)
-        for k, v in medusa_buffers.items()
-    }
     return medusa_buffers
 
 
