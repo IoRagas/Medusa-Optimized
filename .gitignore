@@ -175,3 +175,12 @@ llm_judge/data/mt_bench_test
 llm_judge/data/mt_bench_test_rs
 data
 medusa/eval/*.sh
+
+# PDC Project Specific Files
+presentation_script.md
+presentation_outline.md
+before_optimization_report1.md
+CHANGES_FROM_ORIGINAL.md
+PDC_Medusa_Report.tex
+optimization_plan.md
+memory/
