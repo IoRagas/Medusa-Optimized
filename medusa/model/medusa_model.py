@@ -66,6 +66,31 @@ class MedusaModelABC(nn.Module):
 
     def get_tokenizer(self): return self.tokenizer
 
+    def fuse_medusa_heads(self):
+        self.fused_res_weights = nn.ParameterList()
+        self.fused_res_biases = nn.ParameterList()
+        for layer_idx in range(self.medusa_num_layers):
+            weights, biases = [], []
+            for head_idx in range(self.medusa):
+                res_block = self.medusa_head[head_idx][layer_idx]
+                weights.append(res_block.linear.weight.data)
+                biases.append(res_block.linear.bias.data)
+            self.fused_res_weights.append(nn.Parameter(torch.stack(weights)))
+            self.fused_res_biases.append(nn.Parameter(torch.stack(biases)))
+            
+        weights = []
+        for head_idx in range(self.medusa):
+            linear = self.medusa_head[head_idx][-1]
+            weights.append(linear.weight.data)
+        self.fused_final_weight = nn.Parameter(torch.stack(weights))
+        self.is_fused = True
+        
+        # Free original un-batched heads to save VRAM
+        del self.medusa_head
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+
     def medusa_forward(self, input_ids=None, attention_mask=None, past_key_values=None, output_orig=False, position_ids=None, **kwargs):
         # [MODIFIED] Inject the medusa_mask if not provided, padded for past_key_values
         if attention_mask is None and hasattr(self.model, "medusa_mask") and self.model.medusa_mask is not None:
@@ -84,10 +109,38 @@ class MedusaModelABC(nn.Module):
             outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, past_key_values=past_key_values, position_ids=position_ids, **kwargs)
             if output_orig:
                 orig = self.lm_head(outputs[0])
-        hidden_states = outputs[0].to(torch.float32)
-        medusa_logits = [self.medusa_head[i](hidden_states).to(outputs[0].dtype) for i in range(self.medusa)]
-        if output_orig: return torch.stack(medusa_logits, dim=0), outputs, orig
-        return torch.stack(medusa_logits, dim=0)
+        
+        hidden_states = outputs[0]
+        
+        if getattr(self, "is_fused", False):
+            # Batched execution for Medusa Heads
+            input_dtype = hidden_states.dtype
+            B, L, D = hidden_states.shape
+            
+            # Expand for K heads
+            h_float = hidden_states.unsqueeze(0).expand(self.medusa, -1, -1, -1).reshape(self.medusa, B*L, D).to(torch.float32)
+            
+            for layer_idx in range(self.medusa_num_layers):
+                w = self.fused_res_weights[layer_idx].transpose(1, 2)
+                b = self.fused_res_biases[layer_idx]
+                
+                res = torch.bmm(h_float.to(w.dtype), w)
+                res = res + b.unsqueeze(1)
+                import torch.nn.functional as F
+                res = F.silu(res).to(torch.float32)
+                h_float = h_float + res
+                
+            w = self.fused_final_weight.transpose(1, 2)
+            logits = torch.bmm(h_float.to(w.dtype), w)
+            
+            medusa_logits = logits.reshape(self.medusa, B, L, -1).to(input_dtype)
+        else:
+            hidden_states = hidden_states.to(torch.float32)
+            medusa_logits = [self.medusa_head[i](hidden_states).to(outputs[0].dtype) for i in range(self.medusa)]
+            medusa_logits = torch.stack(medusa_logits, dim=0)
+            
+        if output_orig: return medusa_logits, outputs, orig
+        return medusa_logits
 
     def get_medusa_choice(self, model_name):
         if 'vicuna' in model_name:
@@ -122,7 +175,9 @@ class MedusaModelABC(nn.Module):
         if hasattr(self, "medusa_choices") and self.medusa_choices == medusa_choices:
             medusa_buffers = self.medusa_buffers
         else:
-            medusa_buffers = generate_medusa_buffers(medusa_choices, device=self.device)
+            # Use robust device extraction
+            device = self.lm_head.weight.device
+            medusa_buffers = generate_medusa_buffers(medusa_choices, device=device)
         self.medusa_buffers = medusa_buffers
         self.medusa_choices = medusa_choices
         if hasattr(self, "past_key_values"):
@@ -197,7 +252,14 @@ class MedusaModelLlama(KVLlamaForCausalLM, MedusaModelABC):
         if hasattr(model, "lm_head"):
             model.lm_head.weight = nn.Parameter(model.lm_head.weight.detach().clone().float())
             patch_lm_head(model)
-        model.medusa_head.to(dtype=torch.float32).to(model.device)
+        
+        model.fuse_medusa_heads()
+        target_device = model.lm_head.weight.device
+        for i in range(len(model.fused_res_weights)):
+            model.fused_res_weights[i].data = model.fused_res_weights[i].data.to(dtype=torch.float32, device=target_device)
+            model.fused_res_biases[i].data = model.fused_res_biases[i].data.to(dtype=torch.float32, device=target_device)
+        model.fused_final_weight.data = model.fused_final_weight.data.to(dtype=torch.float32, device=target_device)
+        
         _remove_accelerate_hooks(model)
         return model
 
@@ -225,7 +287,14 @@ class MedusaModelMistral(KVMistralForCausalLM, MedusaModelABC):
         if hasattr(model, "lm_head"):
             model.lm_head.weight = nn.Parameter(model.lm_head.weight.detach().clone().float())
             patch_lm_head(model)
-        model.medusa_head.to(dtype=torch.float32).to(model.device)
+        
+        model.fuse_medusa_heads()
+        target_device = model.lm_head.weight.device
+        for i in range(len(model.fused_res_weights)):
+            model.fused_res_weights[i].data = model.fused_res_weights[i].data.to(dtype=torch.float32, device=target_device)
+            model.fused_res_biases[i].data = model.fused_res_biases[i].data.to(dtype=torch.float32, device=target_device)
+        model.fused_final_weight.data = model.fused_final_weight.data.to(dtype=torch.float32, device=target_device)
+        
         _remove_accelerate_hooks(model)
         return model
 

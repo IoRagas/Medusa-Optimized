@@ -107,6 +107,12 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
     retrieve_indices = retrieve_indices + 1
     retrieve_indices = torch.cat([torch.zeros((retrieve_indices.shape[0], 1), dtype=torch.long, device=device), retrieve_indices], dim=1)
 
+    # [MODIFIED] Precompute the mapped retrieve indices to avoid tensor slicing and concatenation during generation
+    mapped_retrieve_indices = torch.zeros_like(retrieve_indices)
+    valid_mask = retrieve_indices >= 0
+    mapped_retrieve_indices[valid_mask] = medusa_tree_indices[retrieve_indices[valid_mask]]
+    mapped_retrieve_indices[~valid_mask] = -1
+
     # Aggregate the generated buffers into a dictionary
     medusa_attn_mask = medusa_attn_mask.unsqueeze(0).unsqueeze(0)
     # [MODIFIED] Convert binary mask to additive mask for transformers compatibility
@@ -116,7 +122,7 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
         "medusa_attn_mask": medusa_attn_mask,
         "tree_indices": medusa_tree_indices,
         "medusa_position_ids": medusa_position_ids,
-        "retrieve_indices": retrieve_indices,
+        "retrieve_indices": mapped_retrieve_indices,
         }
     
     return medusa_buffers
@@ -289,23 +295,16 @@ def generate_candidates(medusa_logits, logits, tree_indices, retrieve_indices, t
     # Combine the selected candidate from the original logits with the topk medusa logits.
     candidates = torch.cat([candidates_logit, candidates_medusa_logits.view(-1)], dim=-1)
 
-    # Map the combined candidates to the tree indices to get tree candidates.
-    tree_candidates = candidates[tree_indices]
+    # [MODIFIED] Pad candidates with a zero for the -1 indexing in retrieve_indices
+    candidates_ext = torch.cat([candidates, torch.zeros(1, dtype=torch.long, device=candidates.device)], dim=-1)
 
-    # Safety clamp: if medusa heads produce out-of-range token IDs (e.g. bad
-    # weights or a vocab-size mismatch between the head and the embedding table)
-    # clamp here so the embedding lookup never triggers a CUDA assertion.
+    # [MODIFIED] One single index operation for cartesian candidates
     vocab_size = medusa_logits.shape[-1]
-    tree_candidates = tree_candidates.clamp(0, vocab_size - 1)
+    cart_candidates = candidates_ext[retrieve_indices].clamp(0, vocab_size - 1)
+    
+    # Get tree candidates for tree_decoding
+    tree_candidates = candidates[tree_indices].clamp(0, vocab_size - 1).unsqueeze(0)
 
-    # Extend the tree candidates by appending a zero.
-    tree_candidates_ext = torch.cat([tree_candidates, torch.zeros((1), dtype=torch.long, device=tree_candidates.device)], dim=0)
-
-    # Retrieve the cartesian candidates using the retrieve indices.
-    cart_candidates = tree_candidates_ext[retrieve_indices]
-
-    # Unsqueeze the tree candidates for dimension consistency.
-    tree_candidates = tree_candidates.unsqueeze(0)
     return cart_candidates, tree_candidates
 
 

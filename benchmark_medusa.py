@@ -74,7 +74,7 @@ def run_benchmark(args):
         return
 
     tokenizer = model.get_tokenizer()
-    device = next(model.parameters()).device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if torch.cuda.is_available():
         used = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.mem_get_info()[0]) / 1024**3

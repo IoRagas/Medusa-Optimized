@@ -84,6 +84,11 @@ def initialize_past_key_values(model):
     """
     # Extracting configuration from the model
     config = model.config
+    
+    # [MODIFIED] Robustly determine device and dtype using lm_head
+    device = model.lm_head.weight.device
+    dtype = model.lm_head.weight.dtype
+
     # Initializing the batch size to 1, this can be modified if different batch sizes are required
     batch_size = 1
     # Initializing a tensor to store past keys and values for all layers
@@ -93,8 +98,8 @@ def initialize_past_key_values(model):
         config.num_key_value_heads,
         config.max_position_embeddings,
         config.hidden_size // config.num_attention_heads,
-        device=model.device,
-        dtype=model.dtype,
+        device=device,
+        dtype=dtype,
     )
     # Initialize tensor to store the current length of the cached data for all layers.
     # [IMPORTANT] It needs to be kept on CPU for quick access and updates.
