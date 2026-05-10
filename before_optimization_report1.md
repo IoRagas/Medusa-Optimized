@@ -50,7 +50,7 @@ During the initial setup in a modern environment (Google Colab / Transformers v4
 6. **Device Orchestration**: Ensured Medusa heads are correctly moved to the GPU device during model loading to prevent `RuntimeError` device mismatches.
 
 ---
-
+## This profiling was conducted on a local machine with a NVIDIA GeForce RTX 4050 6GB GPU.
 ## 5. Current Performance Profile
 Based on initial benchmarks (Llama-2 7B in 8-bit mode):
 - **Standard Autoregressive Speed**: ~0.80 tokens/sec (Baseline)

@@ -74,7 +74,6 @@ def run_benchmark(args):
         return
 
     tokenizer = model.get_tokenizer()
-    repetition_penalty = 1.2
     device = next(model.parameters()).device
 
     if torch.cuda.is_available():
@@ -88,18 +87,15 @@ def run_benchmark(args):
     input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
 
     max_new = args.max_new_tokens
+    temp = args.temperature
 
     # ══════════════════════════════════════════════════════════════════
     # TEST 1: Standard Autoregressive Generation
     # ══════════════════════════════════════════════════════════════════
     print("\n" + "=" * 60)
-    print("TEST 1: Standard Autoregressive Generation")
+    print(f"TEST 1: Standard Autoregressive Generation (temp={temp})")
     print("=" * 60)
 
-    # Manual autoregressive loop (no KV-cache).
-    # NOTE: The KV-modified LlamaModel expects KVCache objects for caching,
-    # not the standard DynamicCache tuples, so we run without caching here.
-    # This is the fair "baseline" — Medusa's speedup is measured against it.
     start_time = time.time()
     generated_ids = []
     with torch.inference_mode():
@@ -112,19 +108,17 @@ def run_benchmark(args):
             )
             logits = outputs.logits[:, -1, :].float()
             
-            # Apply repetition penalty
-            for token_id in set(generated_ids + input_ids[0].tolist()):
-                if logits[0, token_id] > 0:
-                    logits[0, token_id] /= repetition_penalty
-                else:
-                    logits[0, token_id] *= repetition_penalty
+            if temp > 0:
+                probs = torch.softmax(logits / temp, dim=-1)
+                next_id = torch.multinomial(probs, num_samples=1)
+            else:
+                next_id = logits.argmax(dim=-1, keepdim=True)
 
-            next_id = logits.argmax(dim=-1)
             tok = next_id.item()
             if tok == tokenizer.eos_token_id:
                 break
             generated_ids.append(tok)
-            cur_ids = torch.cat([cur_ids, next_id.unsqueeze(0)], dim=-1)
+            cur_ids = torch.cat([cur_ids, next_id], dim=-1)
 
     standard_time = time.time() - start_time
 
@@ -148,25 +142,30 @@ def run_benchmark(args):
         torch.cuda.empty_cache()
 
     print("\n" + "=" * 60)
-    print("TEST 2: Medusa Speculative Generation")
+    print(f"TEST 2: Medusa Speculative Generation (temp={temp})")
     print("=" * 60)
 
     start_time = time.time()
     medusa_text = ""
+    medusa_tokens = 0
     with torch.inference_mode():
         for chunk in model.medusa_generate(
             input_ids,
-            temperature=0.0,
-            max_steps=max_new,
+            temperature=temp,
+            max_steps=max_new, # max_steps is a loose upper bound
         ):
-            # medusa_generate yields {"text": "full string so far"}
             medusa_text = chunk["text"]
+            # Count current tokens
+            curr_tokens = len(tokenizer.encode(medusa_text, add_special_tokens=False))
+            if curr_tokens >= max_new:
+                # Truncate to match standard generation length for fair speed comparison
+                medusa_token_ids = tokenizer.encode(medusa_text, add_special_tokens=False)[:max_new]
+                medusa_text = tokenizer.decode(medusa_token_ids, skip_special_tokens=True)
+                medusa_tokens = len(medusa_token_ids)
+                break
+            medusa_tokens = curr_tokens
+            
     medusa_time = time.time() - start_time
-
-    # Count tokens from decoded text
-    medusa_token_ids = tokenizer.encode(medusa_text, add_special_tokens=False)
-    medusa_tokens = len(medusa_token_ids)
-    medusa_tps = medusa_tokens / medusa_time if medusa_time > 0 else 0
 
     print(medusa_text)
     print(f"\n[Metrics] Generated {medusa_tokens} tokens in {medusa_time:.2f}s")
@@ -190,5 +189,6 @@ if __name__ == "__main__":
     parser.add_argument("--load-in-8bit", action="store_true", help="Use 8-bit quantization (needs bitsandbytes)")
     parser.add_argument("--load-in-4bit", action="store_true", help="Use 4-bit quantization (needs bitsandbytes)")
     parser.add_argument("--max-new-tokens", type=int, default=150, help="Maximum number of new tokens to generate")
+    parser.add_argument("--temperature", type=float, default=0.0, help="Generation temperature (0.0 for greedy)")
     args = parser.parse_args()
     run_benchmark(args)
