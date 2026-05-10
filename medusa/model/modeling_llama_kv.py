@@ -29,7 +29,9 @@ class KVLlamaAttention(LlamaAttention):
         self.num_key_value_heads = config.num_key_value_heads
         self.head_dim = self.hidden_size // self.num_heads
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
-        self.model = model
+        # Use object.__setattr__ to avoid PyTorch's automatic submodule registration
+        # which would cause infinite recursion (Model -> Layer -> Attention -> Model)
+        object.__setattr__(self, "v_model", model)
 
     def forward(
         self,
@@ -80,8 +82,8 @@ class KVLlamaAttention(LlamaAttention):
             try:
                 # Newer versions: rotary_emb is often in the model, not the layer
                 rotary_emb = getattr(self, "rotary_emb", None)
-                if rotary_emb is None and self.model is not None:
-                    rotary_emb = getattr(self.model, "rotary_emb", None)
+                if rotary_emb is None and hasattr(self, "v_model") and self.v_model is not None:
+                    rotary_emb = getattr(self.v_model, "rotary_emb", None)
                 
                 if rotary_emb is not None:
                     # Newer versions: rotary_emb(x, position_ids)
