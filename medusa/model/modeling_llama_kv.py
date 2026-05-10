@@ -115,7 +115,7 @@ class KVLlamaAttention(LlamaAttention):
         if attention_mask is not None:
             attn_weights = attn_weights + attention_mask.to(torch.float32)
 
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32)
         attn_output = torch.matmul(attn_weights, value_states.to(torch.float32)).to(query_states.dtype)
 
         attn_output = attn_output.transpose(1, 2).contiguous()
