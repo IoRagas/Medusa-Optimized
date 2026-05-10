@@ -113,6 +113,59 @@ class KVMistralDecoderLayer(MistralDecoderLayer):
         super().__init__(config, layer_idx)
         self.self_attn = KVMistralAttention(config, layer_idx, model=model)
 
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        **kwargs,
+    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        is_medusa_cache = past_key_value is not None and hasattr(past_key_value[0], "current_length")
+
+        if not is_medusa_cache:
+            kwargs["past_key_values"] = past_key_value
+            kwargs.pop("past_key_value", None)
+            return super().forward(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                **kwargs,
+            )
+
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+
+        # Self Attention
+        attn_outputs = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            **kwargs,
+        )
+        hidden_states = residual + attn_outputs[0]
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+
+        outputs = (hidden_states,)
+        if output_attentions:
+            outputs += (attn_outputs[1],)
+        if use_cache:
+            outputs += (attn_outputs[2],)
+
+        return outputs
+
 class KVMistralModel(MistralModel):
     def __init__(self, config):
         super().__init__(config)
