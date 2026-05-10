@@ -197,9 +197,18 @@ class KVLlamaModel(LlamaModel):
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         **kwargs,
     ):
-        # [MODIFIED] Inject the medusa_mask if not provided
+        # [MODIFIED] Inject the medusa_mask if not provided and pad it for past_key_values
         if attention_mask is None and self.medusa_mask is not None:
-            attention_mask = self.medusa_mask
+            medusa_mask = self.medusa_mask
+            past_length = past_key_values[0][0].current_length.item() if past_key_values is not None and hasattr(past_key_values[0][0], "current_length") else 0
+            if past_length > 0:
+                padding = torch.zeros(
+                    (medusa_mask.size(0), medusa_mask.size(1), medusa_mask.size(2), past_length),
+                    device=medusa_mask.device, dtype=medusa_mask.dtype
+                )
+                attention_mask = torch.cat([padding, medusa_mask], dim=-1)
+            else:
+                attention_mask = medusa_mask
 
         # [MODIFIED] If we're not using the special Medusa KVCache list, 
         # use the standard LlamaModel.forward to ensure compatibility with 
@@ -245,6 +254,17 @@ class KVLlamaModel(LlamaModel):
                 dtype=torch.long, device=inputs_embeds.device
             )
             position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
+        else:
+            past_key_values_length = past_key_values[0][0].current_length.item() if past_key_values is not None else 0
+
+        # [MODIFIED] Generate causal mask for the prompt
+        if attention_mask is None and seq_length > 1:
+            attention_mask = torch.full((seq_length, seq_length), torch.finfo(inputs_embeds.dtype).min, device=inputs_embeds.device)
+            attention_mask.triu_(diagonal=1)
+            attention_mask = attention_mask[None, None, :, :]
+            if past_key_values_length > 0:
+                padding = torch.zeros((1, 1, seq_length, past_key_values_length), device=inputs_embeds.device, dtype=inputs_embeds.dtype)
+                attention_mask = torch.cat([padding, attention_mask], dim=-1)
 
         hidden_states = inputs_embeds
 

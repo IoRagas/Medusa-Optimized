@@ -67,9 +67,19 @@ class MedusaModelABC(nn.Module):
     def get_tokenizer(self): return self.tokenizer
 
     def medusa_forward(self, input_ids=None, attention_mask=None, past_key_values=None, output_orig=False, position_ids=None, **kwargs):
-        # [MODIFIED] Inject the medusa_mask if not provided
+        # [MODIFIED] Inject the medusa_mask if not provided, padded for past_key_values
         if attention_mask is None and hasattr(self.model, "medusa_mask") and self.model.medusa_mask is not None:
-            attention_mask = self.model.medusa_mask
+            medusa_mask = self.model.medusa_mask
+            past_length = past_key_values[0][0].current_length.item() if past_key_values is not None and hasattr(past_key_values[0][0], "current_length") else 0
+            if past_length > 0:
+                padding = torch.zeros(
+                    (medusa_mask.size(0), medusa_mask.size(1), medusa_mask.size(2), past_length),
+                    device=medusa_mask.device, dtype=medusa_mask.dtype
+                )
+                attention_mask = torch.cat([padding, medusa_mask], dim=-1)
+            else:
+                attention_mask = medusa_mask
+
         with torch.inference_mode():
             outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, past_key_values=past_key_values, position_ids=position_ids, **kwargs)
             if output_orig:
@@ -187,7 +197,7 @@ class MedusaModelLlama(KVLlamaForCausalLM, MedusaModelABC):
         if hasattr(model, "lm_head"):
             model.lm_head.weight = nn.Parameter(model.lm_head.weight.detach().clone().float())
             patch_lm_head(model)
-        model.medusa_head.to(dtype=torch.float32)
+        model.medusa_head.to(dtype=torch.float32).to(model.device)
         _remove_accelerate_hooks(model)
         return model
 
@@ -215,7 +225,7 @@ class MedusaModelMistral(KVMistralForCausalLM, MedusaModelABC):
         if hasattr(model, "lm_head"):
             model.lm_head.weight = nn.Parameter(model.lm_head.weight.detach().clone().float())
             patch_lm_head(model)
-        model.medusa_head.to(dtype=torch.float32)
+        model.medusa_head.to(dtype=torch.float32).to(model.device)
         _remove_accelerate_hooks(model)
         return model
 
