@@ -136,13 +136,13 @@ class KVLlamaModel(LlamaModel):
         # ── Custom Medusa Forward ──────────────────────────────────────
         # This part handles the persistent KV cache used during speculative decoding.
         
-        # Extract metadata from kwargs or model config
-        output_attentions = kwargs.get("output_attentions", self.config.output_attentions)
-        output_hidden_states = kwargs.get("output_hidden_states", self.config.output_hidden_states)
-        use_cache = kwargs.get("use_cache", self.config.use_cache)
-        return_dict = kwargs.get("return_dict", self.config.use_return_dict)
-        inputs_embeds = kwargs.get("inputs_embeds", None)
-        position_ids = kwargs.get("position_ids", None)
+        # Extract metadata from kwargs or model config using pop to avoid duplicate argument errors
+        output_attentions = kwargs.pop("output_attentions", self.config.output_attentions)
+        output_hidden_states = kwargs.pop("output_hidden_states", self.config.output_hidden_states)
+        use_cache = kwargs.pop("use_cache", self.config.use_cache)
+        return_dict = kwargs.pop("return_dict", self.config.use_return_dict)
+        inputs_embeds = kwargs.pop("inputs_embeds", None)
+        position_ids = kwargs.pop("position_ids", None)
 
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
@@ -155,6 +155,17 @@ class KVLlamaModel(LlamaModel):
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
+
+        # [MODIFIED] Generate position_ids if missing in the Medusa path
+        if position_ids is None:
+            # We assume past_key_values[0][0] is a KVCache object with a current_length
+            # Based on kv_cache.py, it has a current_length attribute (tensor)
+            past_key_values_length = past_key_values[0][0].current_length.item() if past_key_values is not None else 0
+            position_ids = torch.arange(
+                past_key_values_length, seq_length + past_key_values_length, 
+                dtype=torch.long, device=inputs_embeds.device
+            )
+            position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
 
         hidden_states = inputs_embeds
 
