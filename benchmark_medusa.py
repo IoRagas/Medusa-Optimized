@@ -154,15 +154,17 @@ def run_benchmark(args):
             temperature=temp,
             max_steps=max_new, # max_steps is a loose upper bound
         ):
-            medusa_text = chunk["text"]
-            # Count current tokens
-            curr_tokens = len(tokenizer.encode(medusa_text, add_special_tokens=False))
+            medusa_token_ids = chunk["token_ids"]
+            curr_tokens = len(medusa_token_ids)
+            
             if curr_tokens >= max_new:
                 # Truncate to match standard generation length for fair speed comparison
-                medusa_token_ids = tokenizer.encode(medusa_text, add_special_tokens=False)[:max_new]
+                medusa_token_ids = medusa_token_ids[:max_new]
                 medusa_text = tokenizer.decode(medusa_token_ids, skip_special_tokens=True)
-                medusa_tokens = len(medusa_token_ids)
+                medusa_tokens = max_new
                 break
+            
+            medusa_text = chunk["text"]
             medusa_tokens = curr_tokens
             
     medusa_time = time.time() - start_time
