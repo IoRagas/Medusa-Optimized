@@ -22,6 +22,14 @@ from transformers.models.llama.modeling_llama import (
 logger = logging.get_logger(__name__)
 
 class KVLlamaAttention(LlamaAttention):
+    def __init__(self, config, layer_idx: Optional[int] = None):
+        super().__init__(config, layer_idx)
+        self.num_heads = config.num_attention_heads
+        self.num_key_value_heads = config.num_key_value_heads
+        self.head_dim = self.hidden_size // self.num_heads
+        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+        self.hidden_size = config.hidden_size
+
     def forward(
         self,
         hidden_states: torch.Tensor,
