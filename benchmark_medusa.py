@@ -166,6 +166,7 @@ def run_benchmark(args):
             medusa_tokens = curr_tokens
             
     medusa_time = time.time() - start_time
+    medusa_tps = medusa_tokens / medusa_time if medusa_time > 0 else 0
 
     print(medusa_text)
     print(f"\n[Metrics] Generated {medusa_tokens} tokens in {medusa_time:.2f}s")
