@@ -32,7 +32,10 @@ class KVLlamaAttention(LlamaAttention):
         use_cache: bool = False,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        if past_key_value is None or not hasattr(past_key_value[0], "kv_cache"):
+        # [MODIFIED] Check if we're using the Medusa persistent KV cache
+        is_medusa_cache = past_key_value is not None and hasattr(past_key_value[0], "kv_cache")
+        
+        if not is_medusa_cache:
             return super().forward(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
@@ -43,6 +46,8 @@ class KVLlamaAttention(LlamaAttention):
                 **kwargs,
             )
 
+        # ── Medusa Specific Attention ──────────────────────────────────
+        # This part is only executed during Medusa speculative decoding tree verification
         bsz, q_len, _ = hidden_states.size()
 
         query_states = self.q_proj(hidden_states)
@@ -53,11 +58,25 @@ class KVLlamaAttention(LlamaAttention):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
+        # [MODIFIED] Handle position embeddings for different transformers versions (4.40+)
         kv_seq_len = past_key_value[0].shape[-2] + key_states.shape[-2]
         
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+        position_embeddings = kwargs.get("position_embeddings", None)
+        if position_embeddings is not None:
+            cos, sin = position_embeddings
+            # If position_embeddings are passed, they are usually already indexed
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        else:
+            # Fallback for manual calculation
+            try:
+                # Newer versions: rotary_emb(x, position_ids)
+                cos, sin = self.rotary_emb(value_states, position_ids)
+            except TypeError:
+                # Older versions: rotary_emb(x, seq_len)
+                cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
+        # Update KV cache
         key_states = past_key_value[0].cat(key_states, dim=2)
         value_states = past_key_value[1].cat(value_states, dim=2)
 
@@ -96,21 +115,34 @@ class KVLlamaModel(LlamaModel):
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
         **kwargs,
     ):
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        # [MODIFIED] Inject the medusa_mask if not provided
+        if attention_mask is None and self.medusa_mask is not None:
+            attention_mask = self.medusa_mask
+
+        # [MODIFIED] If we're not using the special Medusa KVCache list, 
+        # use the standard LlamaModel.forward to ensure compatibility with 
+        # newer transformers features (like position_embeddings, cache_position, etc.)
+        if past_key_values is None or not isinstance(past_key_values, (list, tuple)):
+            return super().forward(
+                input_ids=input_ids, 
+                attention_mask=attention_mask, 
+                past_key_values=past_key_values, 
+                **kwargs
+            )
+
+        # ── Custom Medusa Forward ──────────────────────────────────────
+        # This part handles the persistent KV cache used during speculative decoding.
+        
+        # Extract metadata from kwargs or model config
+        output_attentions = kwargs.get("output_attentions", self.config.output_attentions)
+        output_hidden_states = kwargs.get("output_hidden_states", self.config.output_hidden_states)
+        use_cache = kwargs.get("use_cache", self.config.use_cache)
+        return_dict = kwargs.get("return_dict", self.config.use_return_dict)
+        inputs_embeds = kwargs.get("inputs_embeds", None)
+        position_ids = kwargs.get("position_ids", None)
 
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
@@ -124,13 +156,9 @@ class KVLlamaModel(LlamaModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        # [MODIFIED] Inject the medusa_mask if not provided
-        if attention_mask is None and self.medusa_mask is not None:
-            attention_mask = self.medusa_mask
-
         hidden_states = inputs_embeds
 
-        # decoder layers
+        # Decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
@@ -139,7 +167,7 @@ class KVLlamaModel(LlamaModel):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
-            past_key_value = past_key_values[idx] if past_key_values is not None else None
+            past_key_value = past_key_values[idx]
 
             layer_outputs = decoder_layer(
                 hidden_states,
@@ -148,6 +176,7 @@ class KVLlamaModel(LlamaModel):
                 past_key_value=past_key_value,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
+                **kwargs, # Pass along any extra args like position_embeddings
             )
 
             hidden_states = layer_outputs[0]
@@ -164,12 +193,11 @@ class KVLlamaModel(LlamaModel):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        next_cache = None
-        if use_cache:
-            next_cache = next_decoder_cache if past_key_values is None else past_key_values
+        next_cache = next_decoder_cache if use_cache else None
 
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
+        
         from transformers.modeling_outputs import BaseModelOutputWithPast
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
