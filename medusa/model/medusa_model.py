@@ -67,6 +67,9 @@ class MedusaModelABC(nn.Module):
     def get_tokenizer(self): return self.tokenizer
 
     def medusa_forward(self, input_ids=None, attention_mask=None, past_key_values=None, output_orig=False, position_ids=None, **kwargs):
+        # [MODIFIED] Inject the medusa_mask if not provided
+        if attention_mask is None and hasattr(self.model, "medusa_mask") and self.model.medusa_mask is not None:
+            attention_mask = self.model.medusa_mask
         with torch.inference_mode():
             outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, past_key_values=past_key_values, position_ids=position_ids, **kwargs)
             if output_orig:
@@ -131,7 +134,9 @@ class MedusaModelABC(nn.Module):
             medusa_logits, logits, outputs = tree_decoding(self, tree_candidates, past_key_values, medusa_buffers["medusa_position_ids"], input_ids, medusa_buffers["retrieve_indices"])
             best_candidate, accept_length = evaluate_posterior(logits, candidates, temperature, posterior_threshold, posterior_alpha, top_p=top_p, sampling=sampling, fast=fast)
             input_ids, logits, medusa_logits, new_token = update_inference_inputs(input_ids, candidates, best_candidate, accept_length, medusa_buffers["retrieve_indices"], outputs, logits, medusa_logits, new_token, past_key_values_data, current_length_data)
-            yield {"text": self.tokenizer.decode(input_ids[0, input_len:], skip_special_tokens=True, spaces_between_special_tokens=False, clean_up_tokenization_spaces=True)}
+            # [MODIFIED] Fix the '_' issue by replacing SentencePiece space with regular space
+            decoded_text = self.tokenizer.decode(input_ids[0, input_len:], skip_special_tokens=True)
+            yield {"text": decoded_text.replace(' ', ' ')}
             if self.tokenizer.eos_token_id in input_ids[0, input_len:]: break
 
 def _load_medusa_head_state_dict(pretrained_model_name_or_path):

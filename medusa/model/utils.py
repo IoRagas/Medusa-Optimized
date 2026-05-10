@@ -108,8 +108,12 @@ def generate_medusa_buffers(medusa_choices, device="cuda"):
     retrieve_indices = torch.cat([torch.zeros((retrieve_indices.shape[0], 1), dtype=torch.long), retrieve_indices], dim=1)
 
     # Aggregate the generated buffers into a dictionary
+    medusa_attn_mask = medusa_attn_mask.unsqueeze(0).unsqueeze(0)
+    # [MODIFIED] Convert binary mask to additive mask for transformers compatibility
+    medusa_attn_mask = (medusa_attn_mask < 0.5).to(torch.float32) * -65504.0 # Large negative for fp16
+
     medusa_buffers = {
-        "medusa_attn_mask": medusa_attn_mask.unsqueeze(0).unsqueeze(0),
+        "medusa_attn_mask": medusa_attn_mask,
         "tree_indices": medusa_tree_indices,
         "medusa_position_ids": medusa_position_ids,
         "retrieve_indices": retrieve_indices,
@@ -146,7 +150,7 @@ def initialize_medusa(input_ids, model, medusa_attn_mask, past_key_values):
     medusa_logits, outputs, logits = model(
         input_ids, past_key_values=past_key_values, output_orig=True, medusa_forward=True
     )
-    model.base_model.model.medusa_mask = medusa_attn_mask
+    model.model.medusa_mask = medusa_attn_mask
     return medusa_logits, logits
 
 
@@ -170,8 +174,8 @@ def reset_medusa_mode(
     Returns:
     - None
     """
-    model.base_model.model.medusa_mask = None
-    model.base_model.model.medusa_mode = None
+    model.model.medusa_mask = None
+    model.model.medusa_mode = None
 
 
 def reset_past_key_values(passed_key_values):
